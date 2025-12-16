@@ -1,0 +1,6 @@
+# Python junk
+environment\__pycache__
+
+# RL specific
+logs/
+models/
