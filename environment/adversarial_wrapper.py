@@ -1,109 +1,142 @@
-import os
-# --- CRITICAL FIX: STOP THREAD EXPLOSION ---
-# This forces Numpy/PyTorch to use 1 core per process.
-# Otherwise 126 processes * 128 threads = Server Crash.
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1" 
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-# -------------------------------------------
-
 import gymnasium as gym
-import multiprocessing
 import numpy as np
+from gymnasium import spaces
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv
-from stable_baselines3.common.monitor import Monitor
-from environment.adversarial_wrapper import AdversarialLanderWrapper
 
-# --- CONFIGURATION ---
-ROUNDS = 10
-STEPS_PER_ROUND = 1_000_000  # We can do 1M steps easily now
-MODELS_DIR = "models_parallel"
-LOG_DIR = "logs_parallel"
-MAX_WIND_FORCE = 10.0
-VISIBLE_WIND = False
-
-# Don't use all 128 cores. The overhead of managing them outweighs the benefit.
-# 32 or 64 is often the "Sweet Spot" for LunarLander.
-NUM_CORES = 64  
-
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
-
-def make_env(rank: int, seed: int = 0):
-    def _init():
-        env = gym.make("LunarLander-v3", render_mode=None)
-        env = Monitor(env, os.path.join(LOG_DIR, str(rank)))
-        env = AdversarialLanderWrapper(
-            env, 
-            max_wind_force=MAX_WIND_FORCE, 
-            visible_wind=VISIBLE_WIND
-        )
-        env.reset(seed=seed + rank)
-        return env
-    return _init
-
-def main():
-    print(f"Detected {multiprocessing.cpu_count()} CPUs.")
-    print(f"Limiting to {NUM_CORES} cores to minimize overhead.")
-
-    # 1. Create Environment
-    env = SubprocVecEnv([make_env(i) for i in range(NUM_CORES)])
-
-    # 2. Initialize Agents with OPTIMIZED Hyperparameters
-    print("Initializing Agents...")
-    
-    # Hyperparameter Tuning for Mass Parallelism:
-    # n_steps=128: Collect fewer steps per core because we have many cores.
-    #   Batch size = 128 * 64 cores = 8192 (Perfect size)
-    # n_epochs=5: Don't over-train on old data, keeps the loop fast.
-    ppo_kwargs = {
-        "policy": "MlpPolicy",
-        "env": env,
-        "verbose": 1,
-        "tensorboard_log": LOG_DIR,
-        "device": "cpu",
-        "n_steps": 256,      # Lower this! (Default is 2048)
-        "batch_size": 2048,  # Size of mini-batch for gradient descent
-        "n_epochs": 5,       # Spend less time optimizing
-        "ent_coef": 0.01     # Encourage exploration
-    }
-
-    env.env_method("set_mode", "protagonist")
-    protagonist = PPO(**ppo_kwargs)
-    
-    env.env_method("set_mode", "adversary")
-    adversary = PPO(**ppo_kwargs)
-
-    print("Starting Optimized Training...")
-
-    for round_idx in range(1, ROUNDS + 1):
-        print(f"\n{'='*20} ROUND {round_idx} / {ROUNDS} {'='*20}")
+class AdversarialLanderWrapper(gym.Wrapper):
+    def __init__(self, env, max_wind_force=5.0, max_budget=100.0, visible_wind=False):
+        super().__init__(env)
+        self.env = env
         
-        current_budget = min(20.0 * round_idx, 100.0)
-        env.set_attr("max_budget", current_budget)
+        # Configuration
+        self.max_wind_force = max_wind_force
+        self.max_budget = max_budget
+        self.current_budget = max_budget
+        self.visible_wind = visible_wind
         
-        # --- PROTAGONIST ---
-        print(f"> Training Protagonist...")
-        adversary.save("temp_adversary_for_workers")
-        env.env_method("set_mode", "protagonist")
-        env.env_method("set_opponent", "temp_adversary_for_workers.zip")
+        # State
+        self.opponent_model = None 
+        self.mode = "protagonist" 
+        self.current_wind = np.zeros(2, dtype=np.float32)
+
+        # Action Spaces
+        self.lander_action_space = env.action_space
+        self.wind_action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+
+        # --- OBSERVATION SPACE UPDATE ---
+        env_low = self.env.observation_space.low.astype(np.float32)
+        env_high = self.env.observation_space.high.astype(np.float32)
+
+        extra_dims = 1 + (2 if visible_wind else 0) # +1 for Budget
         
-        protagonist.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name="PPO_Protagonist")
-        protagonist.save(f"{MODELS_DIR}/protagonist_round_{round_idx}")
-
-        # --- ADVERSARY ---
-        print(f"> Training Adversary...")
-        protagonist.save("temp_protagonist_for_workers")
-        env.env_method("set_mode", "adversary")
-        env.env_method("set_opponent", "temp_protagonist_for_workers.zip")
+        low = np.concatenate([env_low, [0.0] * extra_dims]).astype(np.float32)
+        high = np.concatenate([env_high, [1.0] * extra_dims]).astype(np.float32) # Budget is normalized 0-1
         
-        adversary.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name="PPO_Adversary")
-        adversary.save(f"{MODELS_DIR}/adversary_round_{round_idx}")
+        if visible_wind:
+            high[-2:] = float(max_wind_force) 
+            low[-2:] = float(-max_wind_force)
 
-    env.close()
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-if __name__ == "__main__":
-    main()
+    def set_mode(self, mode):
+        assert mode in ["protagonist", "adversary"], "Invalid mode"
+        self.mode = mode
+        self.action_space = self.lander_action_space if mode == "protagonist" else self.wind_action_space
+
+    def set_opponent(self, model_or_path):
+        if isinstance(model_or_path, str):
+            # Multi CPU
+            self.opponent_model = PPO.load(model_or_path, device="cpu")
+        else:
+            # Single core
+            self.opponent_model = model_or_path
+
+    def _get_obs(self, obs):
+        """Constructs the observation vector: [State, Budget, (Wind)]"""
+        # Normalize budget to 0.0 - 1.0 range so the neural net handles it better
+        norm_budget = np.array([self.current_budget / self.max_budget], dtype=np.float32)
+        
+        # 1. Base State + Budget
+        enhanced_obs = np.concatenate([obs, norm_budget])
+        
+        # 2. (Optional) + Wind Vector
+        if self.visible_wind:
+            enhanced_obs = np.concatenate([enhanced_obs, self.current_wind])
+            
+        return enhanced_obs.astype(np.float32)
+
+    def reset(self, **kwargs):
+        self.current_budget = self.max_budget
+        self.current_wind = np.zeros(2, dtype=np.float32)
+        
+        obs, info = self.env.reset(**kwargs)
+        self.last_obs = self._get_obs(obs)
+        return self.last_obs, info
+
+    def step(self, action):
+        lander_action = None
+        wind_raw = np.array([0.0, 0.0], dtype=np.float32) # Default safe value
+
+        # 1. RESOLVE ACTIONS
+        if self.mode == "protagonist":
+            lander_action = action
+            if self.opponent_model and self.current_budget > 0:
+                # Predict returns: (action, state)
+                prediction, _ = self.opponent_model.predict(self.last_obs, deterministic=True)
+                wind_raw = prediction
+                
+        elif self.mode == "adversary":
+            wind_raw = action
+            if self.opponent_model:
+                lander_action, _ = self.opponent_model.predict(self.last_obs, deterministic=True)
+            else:
+                lander_action = 0 
+
+        # --- SAFETY BLOCK: FORCE SHAPE (2,) ---
+        # This fixes the "IndexError: invalid index to scalar variable"
+        # We ensure wind_raw is a flat array, then we verify it has 2 elements.
+        wind_raw = np.array(wind_raw, dtype=np.float32).flatten()
+        
+        # If the network output a single number or scalar, pad it with 0
+        if wind_raw.size < 2:
+            wind_raw = np.resize(wind_raw, (2,)) 
+            wind_raw[1] = 0.0 # Ensure the second value is valid (usually Y-wind)
+        
+        # Clip to ensure we only take the first 2 numbers if it somehow gave us too many
+        wind_raw = wind_raw[:2]
+        # -------------------------------------
+
+        # 2. CALCULATE WIND & BUDGET
+        wind_vector = wind_raw * self.max_wind_force
+        
+        force_magnitude = np.linalg.norm(wind_vector)
+        cost = (force_magnitude * 0.05) + (force_magnitude**2 * 0.005)
+        
+        self.current_budget -= cost
+        if self.current_budget <= 0:
+            self.current_budget = 0.0
+            wind_vector = np.zeros(2, dtype=np.float32) # Reset to pure zero if broke
+
+        self.current_wind = wind_vector
+
+        # 3. APPLY PHYSICS
+        try:
+            lander = self.env.unwrapped.lander
+            if lander:
+                # Now safe because we guaranteed wind_vector is size 2
+                lander.ApplyForceToCenter((float(wind_vector[0]), float(wind_vector[1])), True)
+        except AttributeError:
+            pass
+
+        # 4. STEP ENVIRONMENT
+        next_obs_raw, reward, terminated, truncated, info = self.env.step(lander_action)
+        
+        next_obs = self._get_obs(next_obs_raw)
+        self.last_obs = next_obs
+        
+        if self.mode == "adversary":
+            reward = -reward 
+            reward -= (cost * 0.5) 
+
+        info["budget"] = self.current_budget
+        return next_obs, reward, terminated, truncated, info
