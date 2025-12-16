@@ -1,0 +1,12 @@
+# --- Core Reinforcement Learning ---
+gymnasium[box2d]>=0.29.1  # The environment (LunarLander-v3)
+stable-baselines3>=2.3.0  # PPO, SAC, and Core RL algorithms
+sb3-contrib>=2.3.0        # RecurrentPPO (LSTM) for Phase 2
+
+# --- Visualization & Logging ---
+tensorboard>=2.16.2       # For viewing training graphs
+matplotlib>=3.8.0         # For the live battle plots
+
+# --- Utilities ---
+numpy>=1.26.0             # Math operations
+shimmy>=1.3.0             # Compatibility layer (helps avoid version errors)
