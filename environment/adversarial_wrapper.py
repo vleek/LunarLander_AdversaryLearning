@@ -92,17 +92,13 @@ class AdversarialLanderWrapper(gym.Wrapper):
             else:
                 lander_action = 0 
 
-        # --- SAFETY BLOCK: FORCE SHAPE (2,) ---
-        # This fixes the "IndexError: invalid index to scalar variable"
-        # We ensure wind_raw is a flat array, then we verify it has 2 elements.
         wind_raw = np.array(wind_raw, dtype=np.float32).flatten()
         
         # If the network output a single number or scalar, pad it with 0
         if wind_raw.size < 2:
             wind_raw = np.resize(wind_raw, (2,)) 
-            wind_raw[1] = 0.0 # Ensure the second value is valid (usually Y-wind)
+            wind_raw[1] = 0.0
         
-        # Clip to ensure we only take the first 2 numbers if it somehow gave us too many
         wind_raw = wind_raw[:2]
         # -------------------------------------
 
@@ -123,7 +119,6 @@ class AdversarialLanderWrapper(gym.Wrapper):
         try:
             lander = self.env.unwrapped.lander
             if lander:
-                # Now safe because we guaranteed wind_vector is size 2
                 lander.ApplyForceToCenter((float(wind_vector[0]), float(wind_vector[1])), True)
         except AttributeError:
             pass
