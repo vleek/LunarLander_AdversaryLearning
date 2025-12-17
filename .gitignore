@@ -1,6 +1,77 @@
-# Python junk
-environment\__pycache__
+# =========================================
+# OS / Editor junk
+# =========================================
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# RL specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================================
+# Python junk
+# =========================================
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+environment/.venv/
+environment/venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# =========================================
+# RL / Experiment artifacts (BIG)
+# =========================================
+# Stable-Baselines3 / Monitor / Tensorboard logs
 logs/
+logs_parallel/
+**/monitor.csv
+**/monitor_*.csv
+**/*.tfevents.*
+**/tensorboard/
+runs/
+
+# Saved agents / checkpoints
 models/
+models_parallel/
+**/*.zip
+
+# Temporary worker artifacts from parallel training
+temp_*_for_workers.zip
+
+# Optional: if you ever dump videos
+videos/
+**/*.mp4
+**/*.avi
+
+# =========================================
+# Data outputs (keep code, ignore generated)
+# =========================================
+analysis/outputs/
+*.png
+*.pdf
+*.csv
+
+# If you want to KEEP your curated CSVs for the paper/poster,
+# comment out the line above "*.csv" and instead ignore only:
+# analysis/outputs/*.csv
+
+# =========================================
+# Misc
+# =========================================
+*.log
