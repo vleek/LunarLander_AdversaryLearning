@@ -40,7 +40,7 @@ def main():
     env.set_mode("adversary")
     adversary = PPO("MlpPolicy", env, verbose=1, tensorboard_log=LOG_DIR)
 
-    # 3. Iterative Training Loop (RARL)
+    # 3. Iterative Training Loop
     for round_idx in range(1, ROUNDS + 1):
         print(f"\n{'='*20} ROUND {round_idx} / {ROUNDS} {'='*20}")
 

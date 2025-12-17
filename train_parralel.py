@@ -25,8 +25,6 @@ LOG_DIR = "logs_parallel"
 MAX_WIND_FORCE = 10.0
 VISIBLE_WIND = False
 
-# Don't use all 128 cores. The overhead of managing them outweighs the benefit.
-# 32 or 64 is often the "Sweet Spot" for LunarLander.
 NUM_CORES = 64  
 
 os.makedirs(MODELS_DIR, exist_ok=True)
