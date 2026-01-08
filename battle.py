@@ -9,8 +9,8 @@ from environment.adversarial_wrapper import AdversarialLanderWrapper
 PROTAGONIST_PATH = "models/protagonist_round_10"
 ADVERSARY_PATH   = "models/adversary_round_10"
 NO_ADVERSARY     = False
-PLOT_WIND        = False   # Set False to disable the live graph
-MAX_WIND         = 10.0
+PLOT_WIND        = True   # Set False to disable the live graph
+MAX_WIND         = 5.0
 
 def run_battle():
     # 1. Environment Setup
