@@ -112,7 +112,7 @@ def main():
         
         # Train
         protagonist.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name="PPO_Protagonist")
-        protagonist.save(f"{MODELS_DIR}/protagonist_round_{round_idx}")
+        protagonist.save(f"{MODELS_DIR}/protagonist_PPO_F_{round_idx}")
 
         # --- PHASE B: TRAIN ADVERSARY ---
         print(f"> Training Adversary (vs Frozen Protagonist)...")
@@ -126,7 +126,7 @@ def main():
         
         # Train
         adversary.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name="PPO_Adversary")
-        adversary.save(f"{MODELS_DIR}/adversary_round_{round_idx}")
+        adversary.save(f"{MODELS_DIR}/adversary_PPO_F_{round_idx}")
 
     env.close()
     print("Training Complete.")
