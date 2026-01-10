@@ -48,11 +48,29 @@ class AdversarialLanderWrapper(gym.Wrapper):
         self.mode = mode
         self.action_space = self.lander_action_space if mode == "protagonist" else self.wind_action_space
 
-    def set_opponent(self, model_or_path):
+    def set_opponent(self, model_or_path, algo_type="PPO"):
+        """
+        Loads the opponent model based on the algorithm type.
+        algo_type: "PPO", "SAC", or "LSTM"
+        """
         if isinstance(model_or_path, str):
-            self.opponent_model = PPO.load(model_or_path, device="cpu")
+            # Dynamic Import to avoid circular dependencies
+            from stable_baselines3 import PPO, SAC
+            from sb3_contrib import RecurrentPPO
+            
+            # Map string to Class
+            loader_map = {
+                "PPO": PPO,
+                "SAC": SAC,
+                "LSTM": RecurrentPPO
+            }
+            loader = loader_map.get(algo_type, PPO)
+                
+            # Load model on CPU
+            self.opponent_model = loader.load(model_or_path, device="cpu")
         else:
             self.opponent_model = model_or_path
+
 
     def _get_obs(self, obs):
         norm_budget = np.array([self.current_budget / self.max_budget], dtype=np.float32)

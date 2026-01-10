@@ -1,135 +1,174 @@
 import os
-# --- CRITICAL FIX: STOP THREAD EXPLOSION ---
-# This forces Numpy/PyTorch to use 1 core per process.
-# Otherwise 64 processes * 64 threads = Server Crash.
+# --- OPTIMIZATION FLAGS ---
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1" 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-# -------------------------------------------
 
 import gymnasium as gym
 import multiprocessing
-import numpy as np
-from stable_baselines3 import PPO
+import shutil
+from stable_baselines3 import PPO, SAC
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from environment.adversarial_wrapper import AdversarialLanderWrapper
 
-# --- CONFIGURATION ---
+# --- GLOBAL CONFIG ---
 ROUNDS = 10
-STEPS_PER_ROUND = 500_000  # Total 10M steps
-MODELS_DIR = "models_parallel"
-LOG_DIR = "logs_parallel"
+STEPS_PER_ROUND = 500_000 
+MAX_WIND_FORCE = 15.0
+NUM_CORES = 64 
 
-# Environment Physics
-MAX_WIND_FORCE = 15.0      # Strong enough to force crashes
-VISIBLE_WIND = False       # Set False for Latent runs, True for Baseline
+# Base Directories
+BASE_MODELS_DIR = "models_parallel"
+BASE_LOGS_DIR = "logs_parallel"
 
-# Cores: Set this to your actual CPU count (e.g. 64)
-NUM_CORES = 64  
+# --- THE 6 SCENARIOS ---
+SCENARIOS = [
+    {"name": "PPO_Visible",  "algo": "PPO",  "visible": True},
+    {"name": "PPO_Latent",   "algo": "PPO",  "visible": False},
+    
+    {"name": "LSTM_Visible", "algo": "LSTM", "visible": True},
+    {"name": "LSTM_Latent",  "algo": "LSTM", "visible": False},
+    
+    {"name": "SAC_Visible",  "algo": "SAC",  "visible": True},
+    {"name": "SAC_Latent",   "algo": "SAC",  "visible": False},
+]
 
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
-
-def make_env(rank: int, seed: int = 0):
+def make_env(rank: int, visible_wind: bool, log_dir: str, seed: int = 0):
     def _init():
-        # Create base env
         env = gym.make("LunarLander-v3", render_mode=None)
-        # Wrap for logging
-        env = Monitor(env, os.path.join(LOG_DIR, str(rank)))
-        # Wrap for Adversarial Physics
+        env = Monitor(env, os.path.join(log_dir, str(rank)))
         env = AdversarialLanderWrapper(
             env, 
             max_wind_force=MAX_WIND_FORCE, 
-            visible_wind=VISIBLE_WIND
+            visible_wind=visible_wind
         )
         env.reset(seed=seed + rank)
         return env
     return _init
 
-def main():
-    print(f"Detected {multiprocessing.cpu_count()} CPUs.")
-    print(f"Limiting to {NUM_CORES} cores to minimize overhead.")
-
-    # 1. Create Environment FIRST (Fixes NameError)
-    # This spins up 64 separate Python processes
-    env = SubprocVecEnv([make_env(i) for i in range(NUM_CORES)])
-
-    # 2. Define Hyperparameters SECOND (Now env exists)
-    print("Initializing Agents...")
-    
-    # Hyperparameter Tuning for Mass Parallelism (64 Cores):
-    # n_steps=128: Collect fewer steps per core.
-    # Batch size = 128 * 64 cores = 8192 samples per update (Optimal)
+def get_hyperparameters(algo_type, env):
+    # 1. PPO CONFIG
     ppo_kwargs = {
         "policy": "MlpPolicy",
         "env": env,
         "verbose": 1,
-        "tensorboard_log": LOG_DIR,
         "device": "cpu",
-        
-        "n_steps": 128,      # Lower this! (Default is 2048)
-        "batch_size": 2048,  # Size of mini-batch for gradient descent
-        "n_epochs": 5,       # Spend less time optimizing old data
+        "n_steps": 128,      
+        "batch_size": 2048,
+        "n_epochs": 5,
         "learning_rate": 3e-4, 
-        "ent_coef": 0.01,    # Encourage exploration
-        "gamma": 0.995,      # Long horizon
+        "ent_coef": 0.01,
+        "gamma": 0.995,
     }
-
-    # 3. Initialize Agents
-    # Protagonist (The Pilot)
-    env.env_method("set_mode", "protagonist")
-    protagonist = PPO(**ppo_kwargs)
     
-    # Adversary (The Wind God)
+    # 2. LSTM CONFIG
+    if algo_type == "LSTM":
+        lstm_kwargs = ppo_kwargs.copy()
+        lstm_kwargs["policy"] = "MlpLstmPolicy"
+        lstm_kwargs["policy_kwargs"] = {"enable_critic_lstm": False}
+        return RecurrentPPO, lstm_kwargs
+
+    # 3. SAC CONFIG
+    elif algo_type == "SAC":
+        sac_kwargs = {
+            "policy": "MlpPolicy",
+            "env": env,
+            "verbose": 1,
+            "device": "cpu",
+            "buffer_size": 1_000_000,
+            "batch_size": 256,
+            "learning_rate": 3e-4,
+            "ent_coef": "auto",
+            "gamma": 0.995,
+            "train_freq": (1, "step"),
+            "gradient_steps": 32,
+        }
+        return SAC, sac_kwargs
+        
+    return PPO, ppo_kwargs
+
+def run_scenario(scenario):
+    name = scenario["name"]
+    algo_type = scenario["algo"]
+    is_visible = scenario["visible"]
+    
+    print(f"\n{'#'*40}")
+    print(f"STARTING SCENARIO: {name}")
+    print(f"Algorithm: {algo_type} | Visible Wind: {is_visible}")
+    print(f"{'#'*40}\n")
+
+    # --- NEW DIRECTORY STRUCTURE ---
+    # Structure: models_parallel/{Scenario_Name}/{Protagonist|Adversary}/
+    scenario_model_dir = os.path.join(BASE_MODELS_DIR, name)
+    prot_model_dir = os.path.join(scenario_model_dir, "protagonist")
+    adv_model_dir = os.path.join(scenario_model_dir, "adversary")
+    
+    # Logs: logs_parallel/{Scenario_Name}/
+    scenario_log_dir = os.path.join(BASE_LOGS_DIR, name)
+
+    os.makedirs(prot_model_dir, exist_ok=True)
+    os.makedirs(adv_model_dir, exist_ok=True)
+    os.makedirs(scenario_log_dir, exist_ok=True)
+
+    # 1. Create Env
+    env = SubprocVecEnv([make_env(i, is_visible, scenario_log_dir) for i in range(NUM_CORES)])
+
+    # 2. Setup Agents
+    AgentClass, kwargs = get_hyperparameters(algo_type, env)
+    kwargs["tensorboard_log"] = scenario_log_dir
+    
+    env.env_method("set_mode", "protagonist")
+    protagonist = AgentClass(**kwargs)
+    
     env.env_method("set_mode", "adversary")
-    adversary = PPO(**ppo_kwargs)
+    adversary = AgentClass(**kwargs)
 
-    print("Starting Optimized Training...")
-
-    # 4. Training Loop
+    # 3. Training Loop
     for round_idx in range(1, ROUNDS + 1):
-        print(f"\n{'='*20} ROUND {round_idx} / {ROUNDS} {'='*20}")
+        print(f" > Round {round_idx}/{ROUNDS} [{name}]")
         
-        # Curriculum: Slowly increase Adversary Budget
         current_budget = min(20.0 * round_idx, 100.0)
-        
-        # IMPORTANT: Use set_attr for Parallel Envs
         env.set_attr("max_budget", current_budget)
-        print(f"Adversary Budget set to: {current_budget}")
         
-        # --- PHASE A: TRAIN PROTAGONIST ---
-        print(f"> Training Protagonist (vs Frozen Adversary)...")
+        # --- TRAIN PROTAGONIST ---
+        adv_path = "temp_adversary_worker"
+        adversary.save(adv_path)
         
-        # Save current adversary state to file so workers can load it
-        adversary.save("temp_adversary_for_workers")
-        
-        # Instruct workers to become Protagonists & load the Enemy
         env.env_method("set_mode", "protagonist")
-        env.env_method("set_opponent", "temp_adversary_for_workers.zip")
+        env.env_method("set_opponent", f"{adv_path}.zip", algo_type) 
         
-        # Train
-        protagonist.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name="PPO_Protagonist")
-        protagonist.save(f"{MODELS_DIR}/protagonist_PPO_F_{round_idx}")
+        protagonist.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name=f"{algo_type}_Protagonist")
+        # Save to specific subfolder
+        protagonist.save(os.path.join(prot_model_dir, f"round_{round_idx}"))
 
-        # --- PHASE B: TRAIN ADVERSARY ---
-        print(f"> Training Adversary (vs Frozen Protagonist)...")
+        # --- TRAIN ADVERSARY ---
+        prot_path = "temp_protagonist_worker"
+        protagonist.save(prot_path)
         
-        # Save current protagonist state
-        protagonist.save("temp_protagonist_for_workers")
-        
-        # Instruct workers to become Adversaries & load the Target
         env.env_method("set_mode", "adversary")
-        env.env_method("set_opponent", "temp_protagonist_for_workers.zip")
+        env.env_method("set_opponent", f"{prot_path}.zip", algo_type)
         
-        # Train
-        adversary.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name="PPO_Adversary")
-        adversary.save(f"{MODELS_DIR}/adversary_PPO_F_{round_idx}")
+        adversary.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name=f"{algo_type}_Adversary")
+        # Save to specific subfolder
+        adversary.save(os.path.join(adv_model_dir, f"round_{round_idx}"))
 
     env.close()
-    print("Training Complete.")
+    
+    if os.path.exists(f"{adv_path}.zip"): os.remove(f"{adv_path}.zip")
+    if os.path.exists(f"{prot_path}.zip"): os.remove(f"{prot_path}.zip")
+    
+    print(f"Scenario {name} Complete.")
+
+def main():
+    print(f"Detected {multiprocessing.cpu_count()} CPUs.")
+    print(f"Using {NUM_CORES} cores.")
+    
+    for scenario in SCENARIOS:
+        run_scenario(scenario)
 
 if __name__ == "__main__":
     main()
