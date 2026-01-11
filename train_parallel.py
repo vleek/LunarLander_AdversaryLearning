@@ -25,21 +25,29 @@ NUM_CORES = 64
 BASE_MODELS_DIR = "models_parallel"
 BASE_LOGS_DIR = "logs_parallel"
 
-# --- THE 6 SCENARIOS ---
+# --- THE 6 SCENARIOS (Updated with 'continuous' flag) ---
 SCENARIOS = [
-    {"name": "PPO_Visible",  "algo": "PPO",  "visible": True},
-    {"name": "PPO_Latent",   "algo": "PPO",  "visible": False},
+    # PPO & LSTM work on standard Discrete Lander
+    #{"name": "PPO_Visible",  "algo": "PPO",  "visible": True,  "continuous": False},
+    #{"name": "PPO_Latent",   "algo": "PPO",  "visible": False, "continuous": False},
     
-    {"name": "LSTM_Visible", "algo": "LSTM", "visible": True},
-    {"name": "LSTM_Latent",  "algo": "LSTM", "visible": False},
+    #{"name": "LSTM_Visible", "algo": "LSTM", "visible": True,  "continuous": False},
+    #{"name": "LSTM_Latent",  "algo": "LSTM", "visible": False, "continuous": False},
     
-    {"name": "SAC_Visible",  "algo": "SAC",  "visible": True},
-    {"name": "SAC_Latent",   "algo": "SAC",  "visible": False},
+    # SAC REQUIRES Continuous Lander (The Fix)
+    {"name": "SAC_Visible",  "algo": "SAC",  "visible": True,  "continuous": True},
+    {"name": "SAC_Latent",   "algo": "SAC",  "visible": False, "continuous": True},
 ]
 
-def make_env(rank: int, visible_wind: bool, log_dir: str, seed: int = 0):
+def make_env(rank: int, visible_wind: bool, log_dir: str, continuous: bool, seed: int = 0):
+    """
+    Factory function to create environments.
+    Fix: Added 'continuous' argument so SAC gets the correct environment type.
+    """
     def _init():
-        env = gym.make("LunarLander-v3", render_mode=None)
+        # Pass continuous=True only if the scenario demands it (SAC)
+        env = gym.make("LunarLander-v3", continuous=continuous, render_mode=None)
+        
         env = Monitor(env, os.path.join(log_dir, str(rank)))
         env = AdversarialLanderWrapper(
             env, 
@@ -95,27 +103,28 @@ def run_scenario(scenario):
     name = scenario["name"]
     algo_type = scenario["algo"]
     is_visible = scenario["visible"]
+    is_continuous = scenario["continuous"]
     
     print(f"\n{'#'*40}")
     print(f"STARTING SCENARIO: {name}")
-    print(f"Algorithm: {algo_type} | Visible Wind: {is_visible}")
+    print(f"Algorithm: {algo_type} | Visible: {is_visible} | Continuous: {is_continuous}")
     print(f"{'#'*40}\n")
 
-    # --- NEW DIRECTORY STRUCTURE ---
-    # Structure: models_parallel/{Scenario_Name}/{Protagonist|Adversary}/
+    # Paths
     scenario_model_dir = os.path.join(BASE_MODELS_DIR, name)
     prot_model_dir = os.path.join(scenario_model_dir, "protagonist")
     adv_model_dir = os.path.join(scenario_model_dir, "adversary")
-    
-    # Logs: logs_parallel/{Scenario_Name}/
     scenario_log_dir = os.path.join(BASE_LOGS_DIR, name)
 
     os.makedirs(prot_model_dir, exist_ok=True)
     os.makedirs(adv_model_dir, exist_ok=True)
     os.makedirs(scenario_log_dir, exist_ok=True)
 
-    # 1. Create Env
-    env = SubprocVecEnv([make_env(i, is_visible, scenario_log_dir) for i in range(NUM_CORES)])
+    # 1. Create Env (PASS CONTINUOUS FLAG HERE)
+    env = SubprocVecEnv([
+        make_env(i, is_visible, scenario_log_dir, is_continuous) 
+        for i in range(NUM_CORES)
+    ])
 
     # 2. Setup Agents
     AgentClass, kwargs = get_hyperparameters(algo_type, env)
@@ -142,7 +151,6 @@ def run_scenario(scenario):
         env.env_method("set_opponent", f"{adv_path}.zip", algo_type) 
         
         protagonist.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name=f"{algo_type}_Protagonist")
-        # Save to specific subfolder
         protagonist.save(os.path.join(prot_model_dir, f"round_{round_idx}"))
 
         # --- TRAIN ADVERSARY ---
@@ -153,7 +161,6 @@ def run_scenario(scenario):
         env.env_method("set_opponent", f"{prot_path}.zip", algo_type)
         
         adversary.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name=f"{algo_type}_Adversary")
-        # Save to specific subfolder
         adversary.save(os.path.join(adv_model_dir, f"round_{round_idx}"))
 
     env.close()
