@@ -6,8 +6,8 @@ from stable_baselines3 import PPO
 from environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Configuration ---
-PROTAGONIST_PATH = "models/protagonist_round_10"
-ADVERSARY_PATH   = "models/adversary_round_10"
+PROTAGONIST_PATH = r"models_parallel\PPO_Latent\adversary\round_1.zip"
+ADVERSARY_PATH   = r"models_parallel\PPO_Latent\protagonist\round_10.zip"
 NO_ADVERSARY     = False
 PLOT_WIND        = True   # Set False to disable the live graph
 MAX_WIND         = 5.0

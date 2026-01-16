@@ -27,18 +27,32 @@ MODELS_TO_TEST = [
 ]
 
 # Exam Settings
-EPISODES_PER_POINT = 5  # Higher = smoother map (try 5 or 10)
+EPISODES_PER_POINT = 10 # Higher = smoother map (try 5 or 10)
 TEST_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315] 
 TEST_FORCES = [0.0, 5.0, 10.0, 15.0]  # Ramped up to match your 15.0 max
 
-# --- HELPER: FIXED ADVERSARY ---
+# --- HELPER: STOCHASTIC ADVERSARY (Fairer Evaluation) ---
 class FixedAdversary:
-    def __init__(self, wind_x, wind_y, max_force=15.0):
-        # Normalize force to [-1, 1] range for the wrapper
-        self.action = np.array([wind_x / max_force, wind_y / max_force], dtype=np.float32)
+    def __init__(self, wind_x, wind_y, max_force=15.0, noise_std=0.1):
+        """
+        A 'Jittery' adversary that mimics a real PPO agent.
+        It aims for a specific wind vector but adds Gaussian noise.
+        """
+        # Base target (Normalized -1 to 1)
+        self.target_action = np.array([wind_x / max_force, wind_y / max_force], dtype=np.float32)
+        self.noise_std = noise_std # Standard deviation of the jitter (0.1 is usually good)
 
     def predict(self, obs, deterministic=True):
-        return self.action, None
+        # 1. Generate Noise (Simulate the 'trembling' of a neural network)
+        noise = np.random.normal(0, self.noise_std, size=self.target_action.shape)
+        
+        # 2. Add noise to the perfect target
+        noisy_action = self.target_action + noise
+        
+        # 3. Clip to ensure it stays valid (-1 to 1)
+        final_action = np.clip(noisy_action, -1.0, 1.0)
+        
+        return final_action, None
 
 def run_evaluation():
     results = []
@@ -47,7 +61,7 @@ def run_evaluation():
     for cfg in MODELS_TO_TEST:
         full_path = cfg["path"]
         if not os.path.exists(full_path + ".zip"):
-            print(f"⚠️ SKIPPING {cfg['name']}: Model file not found at {full_path}")
+            print(f"⚠️ SKIPPING {cfg['name']}: Model file not found")
             continue
 
         print(f"\n--- Testing: {cfg['name']} ---")
@@ -56,6 +70,11 @@ def run_evaluation():
         env = gym.make("LunarLander-v3", render_mode=None)
         env = AdversarialLanderWrapper(env, max_wind_force=15.0, visible_wind=cfg['visible'])
         
+        # --- CRITICAL FIX: REMOVE BUDGET FOR ALL TESTS ---
+        # Give infinite fuel so the wind NEVER stops blowing during the exam.
+        env.max_budget = 100000.0
+        # -------------------------------------------------
+
         # 2. Load Model
         if cfg["type"] == "LSTM":
             agent = RecurrentPPO.load(full_path, device="cpu")

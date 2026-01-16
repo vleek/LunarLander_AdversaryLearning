@@ -8,30 +8,34 @@ class AdversarialLanderWrapper(gym.Wrapper):
         super().__init__(env)
         self.env = env
         
-        # Configuration
+        # Config
         self.max_wind_force = max_wind_force
         self.max_budget = max_budget
         self.current_budget = max_budget
         self.visible_wind = visible_wind
         
-        # ### NEW: Rate Limiting Config ###
-        # Maximum amount the wind force can change per frame (e.g., 1.0 unit per step)
-        # This prevents "flickering" or instant full-power dumps.
+        # Rate Limit (Prevents wind flickering)
         self.max_wind_change = 1.0 
         
+        # --- NEW: SAFETY WARM-UP ---
+        # The agent needs ~200k steps to learn basic flying.
+        # We scale the effective wind force from 0% to 100% over this period.
+        self.total_steps = 0
+        self.warmup_period = 200_000 
+        # ---------------------------
+
         # State
         self.opponent_model = None 
         self.mode = "protagonist" 
         self.current_wind = np.zeros(2, dtype=np.float32)
 
-        # Action Spaces
+        # Spaces
         self.lander_action_space = env.action_space
         self.wind_action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
-        # --- OBSERVATION SPACE UPDATE ---
+        # Obs Space Update
         env_low = self.env.observation_space.low.astype(np.float32)
         env_high = self.env.observation_space.high.astype(np.float32)
-
         extra_dims = 1 + (2 if visible_wind else 0) 
         
         low = np.concatenate([env_low, [0.0] * extra_dims]).astype(np.float32)
@@ -49,28 +53,15 @@ class AdversarialLanderWrapper(gym.Wrapper):
         self.action_space = self.lander_action_space if mode == "protagonist" else self.wind_action_space
 
     def set_opponent(self, model_or_path, algo_type="PPO"):
-        """
-        Loads the opponent model based on the algorithm type.
-        algo_type: "PPO", "SAC", or "LSTM"
-        """
         if isinstance(model_or_path, str):
-            # Dynamic Import to avoid circular dependencies
             from stable_baselines3 import PPO, SAC
             from sb3_contrib import RecurrentPPO
             
-            # Map string to Class
-            loader_map = {
-                "PPO": PPO,
-                "SAC": SAC,
-                "LSTM": RecurrentPPO
-            }
+            loader_map = {"PPO": PPO, "SAC": SAC, "LSTM": RecurrentPPO}
             loader = loader_map.get(algo_type, PPO)
-                
-            # Load model on CPU
             self.opponent_model = loader.load(model_or_path, device="cpu")
         else:
             self.opponent_model = model_or_path
-
 
     def _get_obs(self, obs):
         norm_budget = np.array([self.current_budget / self.max_budget], dtype=np.float32)
@@ -92,8 +83,9 @@ class AdversarialLanderWrapper(gym.Wrapper):
     def step(self, action):
         lander_action = None
         target_wind_raw = np.array([0.0, 0.0], dtype=np.float32)
+        self.total_steps += 1 # Count steps for warm-up
 
-        # 1. RESOLVE ACTIONS
+        # 1. Resolve Actions
         if self.mode == "protagonist":
             lander_action = action
             if self.opponent_model and self.current_budget > 0:
@@ -107,40 +99,41 @@ class AdversarialLanderWrapper(gym.Wrapper):
             else:
                 lander_action = 0 
 
-        # --- SAFETY BLOCK: FORCE SHAPE (2,) ---
+        # Shape Check
         target_wind_raw = np.array(target_wind_raw, dtype=np.float32).flatten()
         if target_wind_raw.size < 2:
             target_wind_raw = np.resize(target_wind_raw, (2,)) 
             target_wind_raw[1] = 0.0
         target_wind_raw = target_wind_raw[:2]
 
-        # 2. CALCULATE WIND (WITH SMOOTHING)
-        # Calculate the Target Vector (Where the network WANTS to be)
+        # 2. Wind Calculation
         target_wind_vector = target_wind_raw * self.max_wind_force
         
-        # ### NEW: Rate Limiting Logic ###
-        # Calculate difference between current wind and target
+        # Rate Limiting (Smoothing)
         delta = target_wind_vector - self.current_wind
-        
-        # Clip the change so it can't jump too fast (Smoothing)
         delta = np.clip(delta, -self.max_wind_change, self.max_wind_change)
-        
-        # Apply the smooth change
         wind_vector = self.current_wind + delta
+
+        # --- SAFETY WARM-UP SCALING ---
+        # If total steps < 200k, multiply wind by a factor (0.0 to 1.0)
+        # This guarantees the agent isn't crushed in the first hour of training.
+        if self.total_steps < self.warmup_period:
+            warmup_factor = self.total_steps / self.warmup_period
+            wind_vector *= warmup_factor
         # ------------------------------
 
-        # Check Budget
+        # Budget Check
         force_magnitude = np.linalg.norm(wind_vector)
         cost = (force_magnitude * 0.05) + (force_magnitude**2 * 0.005)
         
         self.current_budget -= cost
         if self.current_budget <= 0:
             self.current_budget = 0.0
-            wind_vector = np.zeros(2, dtype=np.float32) # Instant cut-off if out of fuel
+            wind_vector = np.zeros(2, dtype=np.float32)
 
         self.current_wind = wind_vector
 
-        # 3. APPLY PHYSICS
+        # 3. Apply Physics
         try:
             lander = self.env.unwrapped.lander
             if lander:
@@ -148,30 +141,25 @@ class AdversarialLanderWrapper(gym.Wrapper):
         except AttributeError:
             pass
 
-        # 4. STEP ENVIRONMENT
+        # 4. Step
         next_obs_raw, reward, terminated, truncated, info = self.env.step(lander_action)
         
-        # ### NEW: State-Based "Sniper" Logic ###
-        # Extract State (LunarLander-v3 state indices: 0=X, 1=Y, 2=VelX, 3=VelY, 4=Angle, etc.)
+        # Adversary Rewards (Sniper Logic)
         pos_y = next_obs_raw[1]
         angle = next_obs_raw[4]
-        
-        # Define Vulnerability: Low altitude (< 0.5) OR High Tilt (> 0.2 rad)
         is_vulnerable = (pos_y < 0.5) or (abs(angle) > 0.2)
         sniper_bonus = 0.0
         
-        # If we are attacking significantly while the agent is vulnerable, get a bonus
         if is_vulnerable and force_magnitude > 1.0:
-            sniper_bonus = 0.05 # Small "Good Job" reward for timing
-        # ---------------------------------------
+            sniper_bonus = 0.05 
 
         next_obs = self._get_obs(next_obs_raw)
         self.last_obs = next_obs
         
         if self.mode == "adversary":
-            reward = -reward  # Zero-Sum Base
-            reward -= (cost * 0.5) # Usage Tax (Prevents spraying)
-            reward += sniper_bonus # Add Sniper Bonus
+            reward = -reward 
+            reward -= (cost * 0.5) 
+            reward += sniper_bonus
 
         info["budget"] = self.current_budget
         return next_obs, reward, terminated, truncated, info
