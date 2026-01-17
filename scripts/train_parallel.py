@@ -20,15 +20,14 @@ from stable_baselines3.common.monitor import Monitor
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
-ROUNDS = 10
-STEPS_PER_ROUND = 500_000 
-MAX_WIND_FORCE = 15.0
+ROUNDS = 50
+STEPS_PER_ROUND = 200000 
+MAX_WIND_FORCE = 10.0
 NUM_CORES = 64  
 
-# Paths updated to point to the new folder structure
-# They go up one level ("..") then into "checkpoints" or "logs"
-BASE_MODELS = os.path.join("..", "checkpoints", "models_parallel")
-BASE_LOGS = os.path.join("..", "logs_parallel")
+
+BASE_MODELS = os.path.join("..", "checkpoints", "models_parallel_test")
+BASE_LOGS = os.path.join("..", "logs_parallel_test")
 
 SCENARIOS = [
     {"name": "PPO_Visible",  "algo": "PPO",  "visible": True},

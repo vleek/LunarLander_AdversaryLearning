@@ -13,12 +13,12 @@ from sb3_contrib import RecurrentPPO
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
-PROTAGONIST_PATH = "checkpoints/models_parallel/PPO_Visible/protagonist/round_10.zip"
-ADVERSARY_PATH   = "checkpoints/models_parallel/PPO_Visible/adversary/round_10.zip"
+PROTAGONIST_PATH = "checkpoints/models_parallel/PPO_Visible/protagonist/round_20.zip"
+ADVERSARY_PATH   = "checkpoints/models_parallel/PPO_Visible/adversary/round_20.zip"
 
 NO_ADVERSARY     = False
 PLOT_WIND        = True
-MAX_WIND         = 15.0
+MAX_WIND         = 10.0 # Updated to 10N
 EPISODES         = 5
 
 def load_agent(path):
@@ -31,17 +31,15 @@ def load_agent(path):
     return PPO.load(path)
 
 def run_battle():
-    # 1. Detect Settings from Path
+    # 1. Detect Settings
     is_visible = "Visible" in PROTAGONIST_PATH
     is_sac = "SAC" in PROTAGONIST_PATH
-    
-    # CRITICAL FIX: PPO/LSTM use Discrete actions, SAC uses Continuous
     use_continuous = True if is_sac else False
 
     mode_str = f"{'VISIBLE' if is_visible else 'LATENT'} | {'CONTINUOUS' if use_continuous else 'DISCRETE'}"
     print(f"--- Battle Arena Initialized ({mode_str}) ---")
 
-    # 2. Setup Env with correct Continuous/Discrete setting
+    # 2. Setup Env
     env = gym.make("LunarLander-v3", continuous=use_continuous, render_mode="human")
     env = AdversarialLanderWrapper(env, max_wind_force=MAX_WIND, visible_wind=is_visible)
 
@@ -86,10 +84,12 @@ def run_battle():
             else:
                 action, _ = pilot.predict(obs, deterministic=True)
             
+            # Step
             obs, reward, terminated, truncated, info = env.step(action)
             score += reward
             done = terminated or truncated
             
+            # Update Plot
             if PLOT_WIND:
                 w = getattr(env, "current_wind", [0, 0])
                 wind_x.append(w[0]); wind_x.pop(0)
@@ -99,8 +99,13 @@ def run_battle():
                 fig.canvas.draw()
                 fig.canvas.flush_events()
 
+            # --- HUD UPDATE ---
             w = getattr(env, "current_wind", [0, 0])
-            sys.stdout.write(f"\rScore: {score:6.1f} | Wind: [{w[0]:5.1f}, {w[1]:5.1f}]")
+            budget = info.get("budget", 0.0)
+            height = obs[1] # Index 1 is always Height (Y-Pos) in LunarLander
+            
+            # Added Height: {height:5.2f}
+            sys.stdout.write(f"\rScore: {score:6.1f} | Budget: {budget:5.1f} | Height: {height:5.2f} | Wind: [{w[0]:5.1f}, {w[1]:5.1f}]")
             sys.stdout.flush()
             time.sleep(0.02) 
 
