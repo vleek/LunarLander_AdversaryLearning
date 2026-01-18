@@ -61,10 +61,15 @@ class RobustnessCallback(BaseCallback):
 
 def make_env(rank, visible_wind, log_dir, seed=0):
     def _init():
+        # 1. Create Base Env
         env = gym.make("LunarLander-v3", continuous=True, render_mode=None)
-        # Capture 'impact_vel' for the callback
-        env = Monitor(env, os.path.join(log_dir, str(rank)), info_keywords=("impact_vel",))
+        
+        # 2. Add Adversarial Logic FIRST (This adds 'impact_vel' to info)
         env = AdversarialLanderWrapper(env, max_wind_force=MAX_WIND_FORCE, visible_wind=visible_wind)
+        
+        # 3. Add Monitor LAST (Now it can see 'impact_vel')
+        env = Monitor(env, os.path.join(log_dir, str(rank)), info_keywords=("impact_vel",))
+        
         env.reset(seed=seed + rank)
         return env
     return _init
