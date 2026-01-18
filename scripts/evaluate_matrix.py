@@ -14,7 +14,7 @@ from sb3_contrib import RecurrentPPO
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
-ROUND_NUM = 10 
+ROUND_NUM = 50 
 # Paths are now relative to the project root
 OUTPUT_CSV = "results/evaluation_results.csv"
 OUTPUT_IMG = "results/results_matrix_2x2.png"
@@ -23,7 +23,7 @@ OUTPUT_IMG = "results/results_matrix_2x2.png"
 EPISODES_PER_POINT = 100 
 
 TEST_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315] 
-TEST_FORCES = [0.0, 5.0, 10.0, 15.0] 
+TEST_FORCES = [0.0, 3.3, 6.6, 10.0] 
 
 # Updated paths to point to 'checkpoints/'
 MODELS_TO_TEST = [

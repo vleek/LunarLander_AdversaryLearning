@@ -17,9 +17,9 @@ from stable_baselines3.common.logger import configure
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
-ROUNDS = 10
-STEPS_PER_ROUND = 300_000 
-MAX_WIND_FORCE = 15.0
+ROUNDS = 50
+STEPS_PER_ROUND = 100000 
+MAX_WIND_FORCE = 10
 NUM_ENVS = 4
 
 # Updated paths to point to the new folder structure

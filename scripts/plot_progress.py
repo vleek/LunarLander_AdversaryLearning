@@ -22,8 +22,8 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- CONFIG ---
-SCENARIO_NAME = "PPO_Visible" 
-TOTAL_ROUNDS = 20
+SCENARIO_NAME = "LSTM_Latent" 
+TOTAL_ROUNDS = 50
 TEST_EPISODES = 20
 MAX_WIND = 10.0 # Updated to match your new settings (10N)
 

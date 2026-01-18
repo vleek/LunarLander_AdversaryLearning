@@ -4,11 +4,15 @@ import multiprocessing
 import shutil
 import gymnasium as gym
 
-# --- 1. PATH SETUP (Critical for importing from 'src') ---
-# Add the project root directory to the python path so we can see 'src'
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+# --- DEBUG PRINT: If you don't see this, the file isn't running ---
+print("--- SCRIPT STARTING ---")
 
-# Force single-thread per core to prevent CPU thrashing
+# --- 1. ROBUST PATH SETUP ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.append(PROJECT_ROOT)
+
+# Force single-thread per core
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1" 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -19,17 +23,16 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
-# --- Config ---
-ROUNDS = 50
+# --- 2. GLOBAL CONFIGURATION ---
+ROUNDS = 50              
 STEPS_PER_ROUND = 200000 
-MAX_WIND_FORCE = 10.0
-NUM_CORES = 64  
+MAX_WIND_FORCE = 10.0    
+NUM_CORES = 10           
 
+BASE_MODELS = os.path.join(PROJECT_ROOT, "checkpoints", "models_parallel")
+BASE_LOGS = os.path.join(PROJECT_ROOT, "logs_parallel")
 
-BASE_MODELS = os.path.join("..", "checkpoints", "models_parallel_test")
-BASE_LOGS = os.path.join("..", "logs_parallel_test")
-
-SCENARIOS = [
+SCENARIO = [
     {"name": "PPO_Visible",  "algo": "PPO",  "visible": True},
     {"name": "PPO_Latent",   "algo": "PPO",  "visible": False},
     {"name": "LSTM_Visible", "algo": "LSTM", "visible": True},
@@ -46,7 +49,6 @@ def make_env(rank, visible_wind, log_dir, seed=0):
     return _init
 
 def get_model_config(algo_type, env):
-    # Standard PPO settings optimized for CPU parallelization
     config = {
         "policy": "MlpPolicy",
         "env": env,
@@ -62,7 +64,7 @@ def get_model_config(algo_type, env):
     
     if algo_type == "LSTM":
         config["policy"] = "MlpLstmPolicy"
-        config["policy_kwargs"] = {"enable_critic_lstm": False} # Optimization
+        config["policy_kwargs"] = {"enable_critic_lstm": False}
         return RecurrentPPO, config
 
     return PPO, config
@@ -71,17 +73,15 @@ def run_scenario(scenario):
     name, algo, vis = scenario["name"], scenario["algo"], scenario["visible"]
     print(f"\n>>> Starting: {name} ({algo})")
 
-    # Setup paths
     path_model = os.path.join(BASE_MODELS, name)
     path_log = os.path.join(BASE_LOGS, name)
+    
     os.makedirs(f"{path_model}/protagonist", exist_ok=True)
     os.makedirs(f"{path_model}/adversary", exist_ok=True)
     os.makedirs(path_log, exist_ok=True)
 
-    # Init parallel envs
     env = SubprocVecEnv([make_env(i, vis, path_log) for i in range(NUM_CORES)])
 
-    # Init agents
     ModelClass, kwargs = get_model_config(algo, env)
     kwargs["tensorboard_log"] = path_log
     
@@ -91,13 +91,12 @@ def run_scenario(scenario):
     env.env_method("set_mode", "adversary")
     adversary = ModelClass(**kwargs)
 
-    # Training Loop
     for r in range(1, ROUNDS + 1):
         budget = min(20.0 * r, 100.0)
         env.set_attr("max_budget", budget)
         print(f" > Round {r}/{ROUNDS} (Budget: {budget})")
         
-        # 1. Train Protagonist (Freeze Adversary)
+        # 1. Train Protagonist
         adversary.save("tmp_adv")
         env.env_method("set_mode", "protagonist")
         env.env_method("set_opponent", "tmp_adv.zip", algo) 
@@ -105,7 +104,7 @@ def run_scenario(scenario):
         protagonist.learn(total_timesteps=STEPS_PER_ROUND, reset_num_timesteps=False, tb_log_name=f"{algo}_Protagonist")
         protagonist.save(f"{path_model}/protagonist/round_{r}")
 
-        # 2. Train Adversary (Freeze Protagonist)
+        # 2. Train Adversary
         protagonist.save("tmp_prot")
         env.env_method("set_mode", "adversary")
         env.env_method("set_opponent", "tmp_prot.zip", algo)
@@ -115,12 +114,12 @@ def run_scenario(scenario):
 
     env.close()
     
-    # Cleanup
     if os.path.exists("tmp_adv.zip"): os.remove("tmp_adv.zip")
     if os.path.exists("tmp_prot.zip"): os.remove("tmp_prot.zip")
     print(f"Finished {name}")
 
+# --- MAKE SURE THIS IS NOT INDENTED ---
 if __name__ == "__main__":
     print(f"Using {NUM_CORES} cores.")
-    for s in SCENARIOS:
+    for s in SCENARIO:
         run_scenario(s)
