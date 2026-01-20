@@ -3,7 +3,7 @@ import numpy as np
 from gymnasium import spaces
 
 class AdversarialLanderWrapper(gym.Wrapper):
-    def __init__(self, env, max_wind_force=10.0, max_budget=100.0, visible_wind=False):
+    def __init__(self, env, max_wind_force=10.0, max_budget=100.0, visible_wind=False, adversary_noise=0.1):
         super().__init__(env)
         self.env = env
         
@@ -13,6 +13,9 @@ class AdversarialLanderWrapper(gym.Wrapper):
         self.visible_wind = visible_wind
         self.max_wind_change = 1.0 
         
+        # New: Noise Level (Standard Deviation of Gaussian Noise)
+        self.adversary_noise = adversary_noise
+
         # Warm-up settings
         self.total_steps = 0
         self.warmup_period = 200_000 
@@ -70,7 +73,7 @@ class AdversarialLanderWrapper(gym.Wrapper):
         self.total_steps += 1
         lander_action, target_wind = None, np.zeros(2, dtype=np.float32)
 
-        # 1. Action Resolution (Same as before)
+        # 1. Action Resolution
         if self.mode == "protagonist":
             lander_action = action
             if self.opponent_model and self.current_budget > 0:
@@ -80,23 +83,35 @@ class AdversarialLanderWrapper(gym.Wrapper):
             if self.opponent_model:
                 lander_action, _ = self.opponent_model.predict(self.last_obs, deterministic=True)
             else:
-                lander_action = 0 
+                # Handle No-Op
+                if isinstance(self.lander_action_space, spaces.Box):
+                    lander_action = np.array([0.0, 0.0], dtype=np.float32)
+                else:
+                    lander_action = 0
+        
+        # --- NEW: Inject Noise into Adversary Action ---
+        # This makes the wind slightly unpredictable, improving robustness.
+        if self.adversary_noise > 0.0:
+            noise = np.random.normal(0, self.adversary_noise, size=np.array(target_wind).shape)
+            target_wind = np.clip(target_wind + noise, -1.0, 1.0)
 
-        # 2. Wind & Cost (Same as before)
+        # 2. Wind & Cost
+        # Hard limit: Target vector cannot exceed max_wind_force
         target_vec = np.resize(np.array(target_wind).flatten(), (2,))[:2] * self.max_wind_force
+        
+        # Smooth transition (Physics limit)
         delta = np.clip(target_vec - self.current_wind, -self.max_wind_change, self.max_wind_change)
         self.current_wind = self.current_wind + delta
 
-        # Decouple Observation vs Physics (Same warm-up logic)
+        # Warm-up (Decouple physics from observation early on)
         applied_wind = self.current_wind.copy()
         if self.total_steps < self.warmup_period:
             warmup_factor = self.total_steps / self.warmup_period
             applied_wind *= max(0.1, warmup_factor)
 
-        # Cost Calculation (Linear: Cheap Wind)
+        # Cost Calculation (Cheaper: 0.02)
         force = np.linalg.norm(self.current_wind)
-        # 0.05 per unit of force. Max force (10.0) = 0.5 budget.
-        cost = force * 0.05  
+        cost = force * 0.02  
         
         self.current_budget -= cost
         if self.current_budget <= 0:
@@ -104,7 +119,7 @@ class AdversarialLanderWrapper(gym.Wrapper):
             self.current_wind = np.zeros(2)
             applied_wind = np.zeros(2)
             
-        # 3. Physics (Same as before)
+        # 3. Physics
         try:
             self.env.unwrapped.lander.ApplyForceToCenter((float(applied_wind[0]), float(applied_wind[1])), True)
         except AttributeError:
@@ -116,23 +131,20 @@ class AdversarialLanderWrapper(gym.Wrapper):
         if terminated or truncated:
             info["impact_vel"] = abs(next_obs_raw[3])
 
-        # 5. REWARD LOGIC (The Fix)
+        # 5. REWARD LOGIC
         if self.mode == "adversary":
-            # A. Base: Zero-sum (You gain what pilot loses)
             adv_reward = -reward 
-            
-            # B. Cost: You pay for fuel (Natural efficiency, no artificial penalties)
             adv_reward -= cost 
 
-            # C. PRESSURE BONUS (New!)
-            # Reward the agent slightly just for being annoying.
-            # This cancels out the cost, making wind "free" if it's strong enough.
-            # It encourages activity over passivity.
+            # Incentive to be active (High Bonus: 0.10)
             if force > 2.0:
-                adv_reward += 0.05 
+                adv_reward += 0.10 
 
-            # D. Sniper Bonus (Keep this small)
-            is_vulnerable = (next_obs_raw[1] < 0.5) or (abs(next_obs_raw[4]) > 0.2)
+            is_low = (next_obs_raw[1] < 0.2)
+            is_unstable = (abs(next_obs_raw[4]) > 0.15)
+            
+            is_vulnerable = is_low or is_unstable
+
             if is_vulnerable and force > 5.0:
                  adv_reward += 0.1 
 

@@ -9,28 +9,34 @@ import sys
 # Add project root to path so we can import from 'src'
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from sb3_contrib import RecurrentPPO
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
 ROUND_NUM = 50 
-# Paths are now relative to the project root
-OUTPUT_CSV = "results/evaluation_results.csv"
-OUTPUT_IMG = "results/results_matrix_2x2.png"
+OUTPUT_CSV = "results/evaluation_results_all.csv"
+OUTPUT_IMG = "results/results_matrix_2x3.png"
 
 # Statistical Significance Setting
-EPISODES_PER_POINT = 100 
+EPISODES_PER_POINT = 25 
 
 TEST_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315] 
 TEST_FORCES = [0.0, 3.3, 6.6, 10.0] 
 
-# Updated paths to point to 'checkpoints/'
+# Updated Grid Layout: 2 Rows x 3 Columns
+# Row 0: Visible Wind | Row 1: Latent Wind
+# Col 0: PPO | Col 1: LSTM | Col 2: SAC
 MODELS_TO_TEST = [
-    {"name": "PPO (Visible)",   "path": f"checkpoints/models_parallel/PPO_Visible/protagonist/round_{ROUND_NUM}",   "type": "PPO",  "visible": True, "row": 0, "col": 0},
-    {"name": "LSTM (Visible)",  "path": f"checkpoints/models_parallel/LSTM_Visible/protagonist/round_{ROUND_NUM}",  "type": "LSTM", "visible": True, "row": 0, "col": 1},
-    {"name": "PPO (Latent)",    "path": f"checkpoints/models_parallel/PPO_Latent/protagonist/round_{ROUND_NUM}",    "type": "PPO",  "visible": False,"row": 1, "col": 0},
-    {"name": "LSTM (Latent)",   "path": f"checkpoints/models_parallel/LSTM_Latent/protagonist/round_{ROUND_NUM}",   "type": "LSTM", "visible": False,"row": 1, "col": 1},
+    # --- VISIBLE ROW (Row 0) ---
+    {"name": "PPO (Visible)",  "path": f"checkpoints/models_parallel/PPO_Visible/protagonist/round_{ROUND_NUM}",   "type": "PPO",  "visible": True,  "row": 0, "col": 0},
+    {"name": "LSTM (Visible)", "path": f"checkpoints/models_parallel/LSTM_Visible/protagonist/round_{ROUND_NUM}",  "type": "LSTM", "visible": True,  "row": 0, "col": 1},
+    {"name": "SAC (Visible)",  "path": f"checkpoints/models_sac_gpu/SAC_Visible/protagonist/round_{ROUND_NUM}",    "type": "SAC",  "visible": True,  "row": 0, "col": 2},
+
+    # --- LATENT ROW (Row 1) ---
+    {"name": "PPO (Latent)",   "path": f"checkpoints/models_parallel/PPO_Latent/protagonist/round_{ROUND_NUM}",    "type": "PPO",  "visible": False, "row": 1, "col": 0},
+    {"name": "LSTM (Latent)",  "path": f"checkpoints/models_parallel/LSTM_Latent/protagonist/round_{ROUND_NUM}",   "type": "LSTM", "visible": False, "row": 1, "col": 1},
+    {"name": "SAC (Latent)",   "path": f"checkpoints/models_sac_gpu/SAC_Latent/protagonist/round_{ROUND_NUM}",     "type": "SAC",  "visible": False, "row": 1, "col": 2},
 ]
 
 class FixedAdversary:
@@ -57,14 +63,21 @@ def run_evaluation():
 
         print(f"\nTesting Model: {cfg['name']}")
         
-        # Setup Env
-        env = gym.make("LunarLander-v3", render_mode=None)
+        # --- CRITICAL: Handle Continuous vs Discrete Env ---
+        # SAC requires continuous=True. PPO/LSTM (standard) use continuous=False.
+        is_continuous = (cfg["type"] == "SAC")
+        
+        env = gym.make("LunarLander-v3", continuous=is_continuous, render_mode=None)
         env = AdversarialLanderWrapper(env, max_wind_force=15.0, visible_wind=cfg['visible'])
-        env.max_budget = 100000.0 # Infinite fuel for rigorous testing
+        env.max_budget = 100000.0 # Infinite fuel
         
         # Load Agent
-        Loader = RecurrentPPO if cfg["type"] == "LSTM" else PPO
-        agent = Loader.load(path, device="cpu")
+        if cfg["type"] == "LSTM":
+            agent = RecurrentPPO.load(path, device="cpu")
+        elif cfg["type"] == "SAC":
+            agent = SAC.load(path, device="cpu")
+        else:
+            agent = PPO.load(path, device="cpu")
         
         env.set_mode("protagonist")
 
@@ -110,44 +123,48 @@ def run_evaluation():
                 })
 
     df = pd.DataFrame(results)
-    # Ensure results directory exists
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     df.to_csv(OUTPUT_CSV, index=False)
     print(f"\nSaved data to {OUTPUT_CSV}")
     return df
 
-def plot_2x2_matrix(df):
+def plot_matrix(df):
     print("Plotting Matrix...")
-    fig, axes = plt.subplots(2, 2, figsize=(16, 14), sharex=True, sharey=True)
-    cbar_ax = fig.add_axes([.91, .3, .03, .4]) 
+    # Updated to 2 Rows, 3 Columns
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12), sharex=True, sharey=True)
+    
+    # Adjust Colorbar position
+    cbar_ax = fig.add_axes([.92, .3, .02, .4]) 
 
     for cfg in MODELS_TO_TEST:
+        # Check if model data exists
+        if df[df["Model"] == cfg["name"]].empty:
+            continue
+
         ax = axes[cfg["row"], cfg["col"]]
         subset = df[df["Model"] == cfg["name"]]
         
-        if subset.empty:
-            ax.text(0.5, 0.5, "No Data", ha='center')
-            continue
-
         heatmap_data = subset.pivot_table(index="Force", columns="Angle", values="Success")
         heatmap_data = heatmap_data.sort_index(ascending=False)
 
+        # Only draw colorbar for the first plot to avoid clutter
+        draw_cbar = (cfg["row"] == 0 and cfg["col"] == 0)
+
         sns.heatmap(
             heatmap_data, ax=ax, cmap="RdYlGn", vmin=0, vmax=1, 
-            annot=True, fmt=".2f", cbar=(cfg["row"]==0 and cfg["col"]==0),
-            cbar_ax=cbar_ax if (cfg["row"]==0 and cfg["col"]==0) else None
+            annot=True, fmt=".2f", cbar=draw_cbar,
+            cbar_ax=cbar_ax if draw_cbar else None
         )
         
         ax.set_title(cfg["name"], fontsize=14, fontweight='bold')
         ax.set_xlabel("Wind Angle (°)")
         ax.set_ylabel("Wind Force")
 
-    fig.suptitle('Robustness Evaluation: Success Rate under Attack', fontsize=20)
+    fig.suptitle('Robustness Evaluation: PPO vs LSTM vs SAC', fontsize=22)
     
     os.makedirs(os.path.dirname(OUTPUT_IMG), exist_ok=True)
     plt.savefig(OUTPUT_IMG, bbox_inches='tight', dpi=300)
     print(f"Saved plot to {OUTPUT_IMG}")
-    # plt.show() # Commented out for server environments
 
 if __name__ == "__main__":
     if os.path.exists(OUTPUT_CSV):
@@ -155,4 +172,4 @@ if __name__ == "__main__":
         df = pd.read_csv(OUTPUT_CSV)
     else:
         df = run_evaluation()
-    plot_2x2_matrix(df)
+    plot_matrix(df)

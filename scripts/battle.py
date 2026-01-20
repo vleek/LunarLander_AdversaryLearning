@@ -13,8 +13,8 @@ from sb3_contrib import RecurrentPPO
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
-PROTAGONIST_PATH = "checkpoints/models_parallel/PPO_Visible/protagonist/round_20.zip"
-ADVERSARY_PATH   = "checkpoints/models_parallel/PPO_Visible/adversary/round_20.zip"
+PROTAGONIST_PATH = "checkpoints/models_parallel/LSTM_Latent/protagonist/round_20.zip"
+ADVERSARY_PATH   = "checkpoints/models_parallel/LSTM_Latent/adversary/round_20.zip"
 
 NO_ADVERSARY     = False
 PLOT_WIND        = True
