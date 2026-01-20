@@ -23,7 +23,7 @@ from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- CONFIG ---
 SCENARIO_NAME = "LSTM_Latent" 
-TOTAL_ROUNDS = 50
+TOTAL_ROUNDS = 10
 TEST_EPISODES = 20
 MAX_WIND = 10.0 # Updated to match your new settings (10N)
 

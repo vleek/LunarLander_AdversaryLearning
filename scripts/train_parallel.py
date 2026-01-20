@@ -24,7 +24,7 @@ from stable_baselines3.common.monitor import Monitor
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- 2. GLOBAL CONFIGURATION ---
-ROUNDS = 10              
+ROUNDS = 10                     
 STEPS_PER_ROUND = 150000 
 MAX_WIND_FORCE = 10.0    
 NUM_CORES = 10           

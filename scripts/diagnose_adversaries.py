@@ -16,7 +16,7 @@ from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- CONFIGURATION ---
 # Check a spread of rounds to see evolution
-ROUNDS_TO_CHECK = [10, 20, 30, 40, 50]  
+ROUNDS_TO_CHECK = [2, 4, 6, 8, 10]  
 MAX_WIND_FORCE = 10.0 
 TEST_EPISODES = 3
 

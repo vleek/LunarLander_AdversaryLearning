@@ -73,7 +73,7 @@ class AdversarialLanderWrapper(gym.Wrapper):
         self.total_steps += 1
         lander_action, target_wind = None, np.zeros(2, dtype=np.float32)
 
-        # 1. Action Resolution
+        # 1. Action Resolution (Same as before)
         if self.mode == "protagonist":
             lander_action = action
             if self.opponent_model and self.current_budget > 0:
@@ -83,66 +83,74 @@ class AdversarialLanderWrapper(gym.Wrapper):
             if self.opponent_model:
                 lander_action, _ = self.opponent_model.predict(self.last_obs, deterministic=True)
             else:
-                # Handle No-Op
                 if isinstance(self.lander_action_space, spaces.Box):
                     lander_action = np.array([0.0, 0.0], dtype=np.float32)
                 else:
                     lander_action = 0
         
-        # --- NEW: Inject Noise into Adversary Action ---
-        # This makes the wind slightly unpredictable, improving robustness.
+        # Noise Injection (Keep this, it's good)
         if self.adversary_noise > 0.0:
             noise = np.random.normal(0, self.adversary_noise, size=np.array(target_wind).shape)
             target_wind = np.clip(target_wind + noise, -1.0, 1.0)
 
-        # 2. Wind & Cost
-        # Hard limit: Target vector cannot exceed max_wind_force
-        target_vec = np.resize(np.array(target_wind).flatten(), (2,))[:2] * self.max_wind_force
+        # 2. SIMPLIFIED WIND & BUDGET LOGIC
+        # ---------------------------------------------------------
+        # A. Calculate the intended force magnitude first
+        #    This is what the agent *wants* to do.
+        raw_target_vec = np.resize(np.array(target_wind).flatten(), (2,))[:2] * self.max_wind_force
         
-        # Smooth transition (Physics limit)
-        delta = np.clip(target_vec - self.current_wind, -self.max_wind_change, self.max_wind_change)
-        self.current_wind = self.current_wind + delta
+        # B. Check Budget Eligibility
+        #    If you are broke, you can't request new wind.
+        #    We force the target to 0.0 if budget is empty.
+        if self.current_budget <= 0:
+            raw_target_vec = np.zeros(2, dtype=np.float32)
 
-        # Warm-up (Decouple physics from observation early on)
+        # C. Smooth Transition (Physics Inertia)
+        #    Wind doesn't disappear instantly even if budget hits 0, 
+        #    it ramps down naturally via the max_wind_change.
+        delta = np.clip(raw_target_vec - self.current_wind, -self.max_wind_change, self.max_wind_change)
+        self.current_wind = self.current_wind + delta
+        
+        # D. Calculate Cost based on the ACTUAL wind existing in the world
+        force = np.linalg.norm(self.current_wind)
+        cost = force * 0.02
+
+        # E. Apply Cost
+        #    We allow budget to go slightly negative in the final step to avoid 
+        #    the "pay for nothing" bug.
+        self.current_budget -= cost
+        if self.current_budget < 0: 
+            self.current_budget = 0.0
+
+        # F. Warm-up Logic
         applied_wind = self.current_wind.copy()
         if self.total_steps < self.warmup_period:
             warmup_factor = self.total_steps / self.warmup_period
             applied_wind *= max(0.1, warmup_factor)
+        # ---------------------------------------------------------
 
-        # Cost Calculation (Cheaper: 0.02)
-        force = np.linalg.norm(self.current_wind)
-        cost = force * 0.02  
-        
-        self.current_budget -= cost
-        if self.current_budget <= 0:
-            self.current_budget = 0.0
-            self.current_wind = np.zeros(2)
-            applied_wind = np.zeros(2)
-            
-        # 3. Physics
+        # 3. Physics Application
         try:
             self.env.unwrapped.lander.ApplyForceToCenter((float(applied_wind[0]), float(applied_wind[1])), True)
         except AttributeError:
             pass
 
-        # 4. Step
+        # 4. Step Environment
         next_obs_raw, reward, terminated, truncated, info = self.env.step(lander_action)
 
         if terminated or truncated:
             info["impact_vel"] = abs(next_obs_raw[3])
 
-        # 5. REWARD LOGIC
+        # 5. REWARD LOGIC (Keep exactly as we designed)
         if self.mode == "adversary":
             adv_reward = -reward 
             adv_reward -= cost 
 
-            # Incentive to be active (High Bonus: 0.10)
             if force > 2.0:
                 adv_reward += 0.10 
 
             is_low = (next_obs_raw[1] < 0.2)
             is_unstable = (abs(next_obs_raw[4]) > 0.15)
-            
             is_vulnerable = is_low or is_unstable
 
             if is_vulnerable and force > 5.0:

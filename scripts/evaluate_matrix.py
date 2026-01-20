@@ -14,7 +14,7 @@ from sb3_contrib import RecurrentPPO
 from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
-ROUND_NUM = 50 
+ROUND_NUM = 10 
 OUTPUT_CSV = "results/evaluation_results_all.csv"
 OUTPUT_IMG = "results/results_matrix_2x3.png"
 
