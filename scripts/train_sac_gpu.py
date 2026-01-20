@@ -5,9 +5,13 @@ import gymnasium as gym
 import numpy as np
 import shutil
 
-# --- 1. PATH SETUP (Critical for importing from 'src') ---
-# Add the project root directory to the python path so we can see 'src'
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+# --- 1. ROBUST PATH SETUP ---
+# Get the absolute folder where THIS script is located (scripts/)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Go up one level to get the Project Root (ML_II/)
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+# Add root to Python path so imports work
+sys.path.append(PROJECT_ROOT)
 
 from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -18,14 +22,13 @@ from src.environment.adversarial_wrapper import AdversarialLanderWrapper
 
 # --- Config ---
 ROUNDS = 50
-STEPS_PER_ROUND = 100000 
-MAX_WIND_FORCE = 10
+STEPS_PER_ROUND = 150000 # Updated to match your optimization
+MAX_WIND_FORCE = 10.0
 NUM_ENVS = 4
 
-# Updated paths to point to the new folder structure
-# Go up one level ("..") then into "checkpoints" or "logs_sac"
-BASE_MODELS = os.path.join("..", "checkpoints", "models_sac_gpu")
-BASE_LOGS = os.path.join("..", "logs_sac")
+# Define absolute paths using PROJECT_ROOT
+BASE_MODELS = os.path.join(PROJECT_ROOT, "checkpoints", "models_sac_gpu")
+BASE_LOGS = os.path.join(PROJECT_ROOT, "logs_sac")
 
 SCENARIOS = [
     {"name": "SAC_Visible", "visible": True},
@@ -97,6 +100,8 @@ def run_scenario(scenario):
 
     path_model = os.path.join(BASE_MODELS, name)
     path_log = os.path.join(BASE_LOGS, name)
+    
+    # Ensure directories exist
     os.makedirs(f"{path_model}/protagonist", exist_ok=True)
     os.makedirs(f"{path_model}/adversary", exist_ok=True)
     os.makedirs(path_log, exist_ok=True)
